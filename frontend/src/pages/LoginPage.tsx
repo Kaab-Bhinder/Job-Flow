@@ -130,13 +130,18 @@ export default function LoginPage() {
           </button>
         </form>
 
-        {/* Footer Link */}
-        <p style={{ fontSize: '0.8125rem', color: 'var(--color-text-secondary)', textAlign: 'center', margin: 0 }}>
-          Don't have an account?{' '}
-          <Link to="/register" style={{ color: 'var(--color-accent)', fontWeight: 600, textDecoration: 'none' }}>
-            Sign up <ArrowRight size={12} style={{ display: 'inline', verticalAlign: 'middle' }} />
+        {/* Footer Links */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', textAlign: 'center' }}>
+          <Link to="/forgot-password" style={{ color: 'var(--color-accent)', fontWeight: 600, textDecoration: 'none', fontSize: '0.8125rem' }}>
+            Forgot your password?
           </Link>
-        </p>
+          <p style={{ fontSize: '0.8125rem', color: 'var(--color-text-secondary)', textAlign: 'center', margin: 0 }}>
+            Don't have an account?{' '}
+            <Link to="/register" style={{ color: 'var(--color-accent)', fontWeight: 600, textDecoration: 'none' }}>
+              Sign up <ArrowRight size={12} style={{ display: 'inline', verticalAlign: 'middle' }} />
+            </Link>
+          </p>
+        </div>
       </div>
     </div>
   );

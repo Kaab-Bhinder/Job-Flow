@@ -9,10 +9,15 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel
 import json
 import os
+import smtplib
 import urllib.parse
 import httpx
 from datetime import timedelta
+from email.message import EmailMessage
 from sqlmodel import select
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = FastAPI(title="Job Flow API — Dev")
 
@@ -35,23 +40,48 @@ def build_frontend_url(path: str = "") -> str:
     return frontend + path
 
 
-def send_verification_email(email: str, verify_url: str):
+def send_email(email: str, subject: str, text_body: str, html_body: str, resend_from: str):
     resend_api_key = os.environ.get('RESEND_API_KEY')
-    resend_from = os.environ.get('RESEND_FROM_EMAIL', 'Job Flow <no-reply@jobflow.local>')
+    smtp_host = os.environ.get('SMTP_HOST')
+    smtp_port = int(os.environ.get('SMTP_PORT', '587'))
+    smtp_user = os.environ.get('SMTP_USER')
+    smtp_password = os.environ.get('SMTP_PASSWORD')
+    from_email = os.environ.get('FROM_EMAIL', smtp_user or 'no-reply@jobflow.local')
+
+    if smtp_host and smtp_user and smtp_password:
+        try:
+            message = EmailMessage()
+            message['Subject'] = subject
+            message['From'] = from_email
+            message['To'] = email
+            message.set_content(text_body)
+            message.add_alternative(html_body, subtype='html')
+
+            if smtp_port == 465:
+                with smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=15) as server:
+                    server.login(smtp_user, smtp_password)
+                    server.send_message(message)
+            else:
+                with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as server:
+                    server.ehlo()
+                    server.starttls()
+                    server.ehlo()
+                    server.login(smtp_user, smtp_password)
+                    server.send_message(message)
+            print(f"Sent email via Gmail SMTP to {email}")
+            return True
+        except Exception as exc:
+            print(f"SMTP fallback failed for {email}: {exc}")
 
     payload = {
         'from': resend_from,
         'to': [email],
-        'subject': 'Verify your Job Flow email',
-        'html': (
-            '<p>Verify your Job Flow account by opening this link:</p>'
-            f'<p><a href="{verify_url}">{verify_url}</a></p>'
-            '<p>If you did not create this account, ignore this message.</p>'
-        ),
-        'text': f'Verify your Job Flow account by opening this link:\n\n{verify_url}\n\nIf you did not create this account, ignore this message.',
+        'subject': subject,
+        'html': html_body,
+        'text': text_body,
     }
 
-    # Local/dev fallback when Resend is not configured.
+    # Local/dev fallback when SMTP is unavailable or fails.
     if not resend_api_key:
         print(f"Verification link for {email}: {verify_url}")
         return False
@@ -67,11 +97,50 @@ def send_verification_email(email: str, verify_url: str):
     )
     try:
         response.raise_for_status()
+        print(f"Sent email via Resend to {email}")
         return True
     except Exception as exc:
         print(f"Resend failed for {email}: {exc}")
+
+    return False
+
+
+def send_verification_email(email: str, verify_url: str):
+    subject = 'Verify your Job Flow email'
+    text_body = (
+        'Verify your Job Flow account by opening this link:\n\n'
+        f'{verify_url}\n\n'
+        'If you did not create this account, ignore this message.'
+    )
+    html_body = (
+        '<p>Verify your Job Flow account by opening this link:</p>'
+        f'<p><a href="{verify_url}">{verify_url}</a></p>'
+        '<p>If you did not create this account, ignore this message.</p>'
+    )
+    resend_from = os.environ.get('RESEND_FROM_EMAIL', 'Job Flow <no-reply@jobflow.local>')
+    ok = send_email(email, subject, text_body, html_body, resend_from)
+    if not ok:
         print(f"Verification link for {email}: {verify_url}")
-        return False
+    return ok
+
+
+def send_password_reset_email(email: str, reset_url: str):
+    subject = 'Reset your Job Flow password'
+    text_body = (
+        'Reset your Job Flow password by opening this link:\n\n'
+        f'{reset_url}\n\n'
+        'If you did not request a password reset, ignore this message.'
+    )
+    html_body = (
+        '<p>Reset your Job Flow password by opening this link:</p>'
+        f'<p><a href="{reset_url}">{reset_url}</a></p>'
+        '<p>If you did not request a password reset, ignore this message.</p>'
+    )
+    resend_from = os.environ.get('RESEND_FROM_EMAIL', 'Job Flow <no-reply@jobflow.local>')
+    ok = send_email(email, subject, text_body, html_body, resend_from)
+    if not ok:
+        print(f"Password reset link for {email}: {reset_url}")
+    return ok
 
 # --- Simple dependencies ---
 
@@ -93,6 +162,15 @@ class RegisterIn(BaseModel):
     id: str
     email: str
     fullName: Optional[str]
+    password: str
+
+
+class ForgotPasswordIn(BaseModel):
+    email: str
+
+
+class ResetPasswordIn(BaseModel):
+    token: str
     password: str
 
 @app.post('/auth/register')
@@ -126,6 +204,38 @@ def login(form_data: OAuth2PasswordRequestForm = Depends()):
             raise HTTPException(status_code=403, detail='Please verify your email before logging in. Check your inbox for the verification link.')
         token = create_access_token({"sub": user.id})
         return {"access_token": token, "token_type": "bearer"}
+
+
+@app.post('/auth/forgot-password')
+def forgot_password(payload: ForgotPasswordIn):
+    with get_session() as session:
+        user = session.exec(select(User).where(User.email == payload.email)).first()
+        if not user:
+            return {"sent": False, "reason": "email_not_found", "message": "No account found for that email."}
+
+        if getattr(user, 'provider', 'local') == 'google':
+            return {"sent": False, "reason": "google_signin", "message": "This account uses Google sign-in. Please continue with Google."}
+
+        reset_token = create_access_token({"sub": user.email, "purpose": "reset_password"}, expires_delta=timedelta(minutes=60))
+        reset_url = build_frontend_url(f"/reset-password?token={reset_token}")
+        send_password_reset_email(user.email, reset_url)
+        return {"sent": True, "resetUrl": reset_url, "message": "A reset link has been sent to your email."}
+
+
+@app.post('/auth/reset-password')
+def reset_password(payload: ResetPasswordIn):
+    decoded = decode_access_token(payload.token)
+    if not decoded or decoded.get('purpose') != 'reset_password':
+        raise HTTPException(status_code=400, detail='Invalid or expired token')
+    email = decoded.get('sub')
+    with get_session() as session:
+        user = session.exec(select(User).where(User.email == email)).first()
+        if not user:
+            raise HTTPException(status_code=404, detail='User not found')
+        user.hashed_password = get_password_hash(payload.password)
+        session.add(user)
+        session.commit()
+        return {"success": True}
 
 
 @app.get('/auth/me')

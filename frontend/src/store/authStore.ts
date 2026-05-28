@@ -8,6 +8,8 @@ interface AuthStore {
   isLoading: boolean;
   login: (email: string, password: string) => Promise<void>;
   register: (name: string, email: string, password: string) => Promise<{ needsVerification?: boolean; verifyUrl?: string }>;
+  forgotPassword: (email: string) => Promise<{ sent?: boolean; message?: string; resetUrl?: string; reason?: string }>;
+  resetPassword: (token: string, newPassword: string) => Promise<{ success?: boolean }>;
   logout: () => void;
 }
 
@@ -50,6 +52,28 @@ export const useAuthStore = create<AuthStore>((set) => ({
     try {
       // use email as stable user id and include fullName
       const response = await api.post('/auth/register', { id: email, email, fullName: name, password });
+      set({ isLoading: false });
+      return response;
+    } catch (e) {
+      set({ isLoading: false });
+      throw e;
+    }
+  },
+  forgotPassword: async (email: string) => {
+    set({ isLoading: true });
+    try {
+      const response = await api.post('/auth/forgot-password', { email });
+      set({ isLoading: false });
+      return response;
+    } catch (e) {
+      set({ isLoading: false });
+      throw e;
+    }
+  },
+  resetPassword: async (token: string, newPassword: string) => {
+    set({ isLoading: true });
+    try {
+      const response = await api.post('/auth/reset-password', { token, password: newPassword });
       set({ isLoading: false });
       return response;
     } catch (e) {

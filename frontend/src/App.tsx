@@ -27,14 +27,14 @@ export default function App() {
   const loadJobs = useJobStore((s) => s.loadJobs);
   useEffect(() => {
     // load jobs initially
-    loadJobs?.();
+    loadJobs?.({ limit: 20, offset: 0 });
 
     const existingToken = api.getToken();
     if (existingToken) {
       api.get('/auth/me')
         .then((me) => {
           useAuthStore.setState({ user: me, isAuthenticated: true });
-          loadJobs?.();
+          loadJobs?.({ limit: 20, offset: 0 });
         })
         .catch(() => {
           api.clearToken();
@@ -55,7 +55,7 @@ export default function App() {
         api.get('/auth/me').then((me) => {
           useAuthStore.setState({ user: me, isAuthenticated: true });
           // refresh jobs & saved jobs now that we're authenticated
-          loadJobs?.();
+          loadJobs?.({ limit: 20, offset: 0 });
         }).catch(() => {
           // ignore
         });

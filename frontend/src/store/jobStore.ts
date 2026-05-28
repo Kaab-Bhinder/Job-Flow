@@ -18,7 +18,13 @@ interface JobStore {
   savedJobIds: string[];
   filters: JobFilters;
   isLoading: boolean;
-  loadJobs?: () => Promise<void>;
+  isRefreshing: boolean;
+  isLoadingMore: boolean;
+  hasMore: boolean;
+  totalJobs: number;
+  loadJobs?: (opts?: { append?: boolean; limit?: number; offset?: number }) => Promise<void>;
+  loadMore?: () => Promise<void>;
+  refreshJobs?: () => Promise<void>;
   setFilter: (key: keyof JobFilters, value: any) => void;
   resetFilters: () => void;
   toggleSaveJob: (jobId: string) => void;
@@ -42,13 +48,19 @@ export const useJobStore = create<JobStore>((set, get) => ({
   savedJobIds: [],
   filters: { ...defaultFilters },
   isLoading: false,
+  isRefreshing: false,
+  isLoadingMore: false,
+  hasMore: true,
+  totalJobs: 0,
   // load jobs from backend
   // call once on app start: useJobStore.getState().loadJobs()
-  loadJobs: async () => {
-    set({ isLoading: true });
+  loadJobs: async (opts = {}) => {
+    const { append = false, limit = 20, offset = 0 } = opts;
+    set({ isLoading: !append, isLoadingMore: append });
     try {
-      const data = await api.get('/jobs');
-      const normalized = (data || []).map((j: any) => ({
+      const data = await api.get(`/jobs?limit=${limit}&offset=${offset}`);
+      const items = Array.isArray(data) ? data : (data?.items || []);
+      const normalized = (items || []).map((j: any) => ({
         ...j,
         tags: Array.isArray(j.tags)
           ? j.tags
@@ -56,7 +68,15 @@ export const useJobStore = create<JobStore>((set, get) => ({
           ? j.tags.split(',').map((t: string) => t.trim()).filter(Boolean)
           : [],
       }));
-      set({ jobs: normalized, isLoading: false });
+      const totalJobs = typeof data?.total === 'number' ? data.total : normalized.length;
+      const hasMore = typeof data?.hasMore === 'boolean' ? data.hasMore : false;
+      set((state) => ({
+        jobs: append ? [...state.jobs, ...normalized] : normalized,
+        isLoading: false,
+        isLoadingMore: false,
+        totalJobs,
+        hasMore,
+      }));
       // if user logged in, also fetch saved ids
       try {
         const saved = await api.get('/saved');
@@ -66,7 +86,25 @@ export const useJobStore = create<JobStore>((set, get) => ({
       }
     } catch (e) {
       console.error('Failed to load jobs', e);
-      set({ isLoading: false });
+      set({ isLoading: false, isLoadingMore: false, isRefreshing: false });
+    }
+  },
+
+  loadMore: async () => {
+    const { jobs, hasMore, isLoadingMore, loadJobs } = get();
+    if (!hasMore || isLoadingMore || !loadJobs) return;
+    await loadJobs({ append: true, limit: 20, offset: jobs.length });
+  },
+
+  refreshJobs: async () => {
+    const { loadJobs } = get();
+    if (!loadJobs) return;
+    set({ isRefreshing: true });
+    try {
+      await api.post('/jobs/refresh');
+      await loadJobs({ append: false, limit: 20, offset: 0 });
+    } finally {
+      set({ isRefreshing: false });
     }
   },
 

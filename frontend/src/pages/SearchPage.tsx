@@ -6,7 +6,7 @@ import FilterPanel from '../components/common/FilterPanel';
 import { Briefcase, SlidersHorizontal, LayoutGrid, List } from 'lucide-react';
 
 export default function SearchPage() {
-  const { getFilteredJobs, filters } = useJobStore();
+  const { getFilteredJobs, filters, hasMore, loadMore, refreshJobs, isLoadingMore, isRefreshing, totalJobs, jobs: loadedJobs } = useJobStore();
   const [showFilters, setShowFilters] = useState(false);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const jobs = getFilteredJobs();
@@ -50,7 +50,8 @@ export default function SearchPage() {
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <span style={{ fontSize: '0.875rem', color: 'var(--color-text-secondary)' }}>
-            <strong style={{ color: 'var(--color-text-primary)' }}>{jobs.length}</strong> jobs found
+            <strong style={{ color: 'var(--color-text-primary)' }}>{jobs.length}</strong> shown
+            {totalJobs > jobs.length ? ` of ${totalJobs}` : ''}
           </span>
           {activeFilterCount > 0 && (
             <span className="tag" style={{
@@ -62,6 +63,14 @@ export default function SearchPage() {
           )}
         </div>
         <div style={{ display: 'flex', gap: '0.375rem' }}>
+          <button
+            onClick={() => refreshJobs?.()}
+            className="btn btn-secondary btn-sm"
+            disabled={isRefreshing}
+            style={{ opacity: isRefreshing ? 0.7 : 1 }}
+          >
+            {isRefreshing ? 'Refreshing...' : 'Refresh jobs'}
+          </button>
           <button
             onClick={() => setShowFilters(!showFilters)}
             className="btn btn-secondary btn-sm"
@@ -126,6 +135,19 @@ export default function SearchPage() {
                 No jobs found
               </h3>
               <p>Try adjusting your search terms or filters</p>
+            </div>
+          )}
+
+          {hasMore && loadedJobs.length > 0 && (
+            <div style={{ display: 'flex', justifyContent: 'center', marginTop: '1.5rem' }}>
+              <button
+                onClick={() => loadMore?.()}
+                className="btn btn-primary"
+                disabled={isLoadingMore}
+                style={{ minWidth: '180px', opacity: isLoadingMore ? 0.8 : 1 }}
+              >
+                {isLoadingMore ? 'Loading more...' : 'Load more jobs'}
+              </button>
             </div>
           )}
         </div>

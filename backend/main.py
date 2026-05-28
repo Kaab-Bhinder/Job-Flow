@@ -4,6 +4,7 @@ from typing import List, Optional
 from sqlmodel import Session, select
 from database import init_db, get_session
 from models import Job, User, SavedJob, Application
+from sqlalchemy import func
 from utils import get_password_hash, verify_password, create_access_token, decode_access_token
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel
@@ -18,6 +19,80 @@ from sqlmodel import select
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+def fetch_adzuna_results(page: int = 1, results_per_page: int = 50):
+    app_id = os.environ.get('ADZUNA_APP_ID')
+    app_key = os.environ.get('ADZUNA_APP_KEY')
+    country = os.environ.get('ADZUNA_COUNTRY', 'us')
+    if not app_id or not app_key:
+        return []
+    url = f'https://api.adzuna.com/v1/api/jobs/{country}/search/{page}'
+    params = {
+        'app_id': app_id,
+        'app_key': app_key,
+        'results_per_page': results_per_page,
+    }
+    try:
+        r = httpx.get(url, params=params, timeout=15.0)
+        r.raise_for_status()
+        data = r.json()
+        return data.get('results', [])
+    except Exception as exc:
+        print('Adzuna fetch error:', exc)
+        return []
+
+
+def upsert_adzuna_jobs_into_db():
+    results = fetch_adzuna_results(page=1, results_per_page=50)
+    if not results:
+        return 0
+    inserted = 0
+    with get_session() as session:
+        for r in results:
+            raw_id = r.get('id') or r.get('adId') or r.get('ad_ref')
+            if not raw_id:
+                continue
+            job_id = f'adzuna-{raw_id}'
+            title = r.get('title') or ''
+            company = (r.get('company') or {}).get('display_name') if isinstance(r.get('company'), dict) else (r.get('company') or '')
+            company = company or ''
+            company_logo = None
+            location = (r.get('location') or {}).get('display_name') if isinstance(r.get('location'), dict) else (r.get('location') or '')
+            description = r.get('description')
+            salary_min = r.get('salary_min')
+            salary_max = r.get('salary_max')
+            salary_currency = r.get('salary_currency')
+            job_type = r.get('contract_time') or r.get('job_type')
+            apply_url = r.get('redirect_url') or r.get('url')
+            category = (r.get('category') or {}).get('label') if isinstance(r.get('category'), dict) else (r.get('category') or '')
+            posted_at = r.get('created') or r.get('created_at')
+            tags = ','.join([category]) if category else None
+
+            existing = session.get(Job, job_id)
+            if existing:
+                # update some fields
+                existing.title = title or existing.title
+                existing.company = company or existing.company
+                existing.companyLogo = company_logo or existing.companyLogo
+                existing.location = location or existing.location
+                existing.description = description or existing.description
+                existing.salaryMin = salary_min or existing.salaryMin
+                existing.salaryMax = salary_max or existing.salaryMax
+                existing.salaryCurrency = salary_currency or existing.salaryCurrency
+                existing.jobType = job_type or existing.jobType
+                existing.applyUrl = apply_url or existing.applyUrl
+                existing.category = category or existing.category
+                existing.postedAt = posted_at or existing.postedAt
+                existing.tags = tags or existing.tags
+                session.add(existing)
+            else:
+                job = Job(id=job_id, source='adzuna', title=title or 'Untitled', company=company or '', companyLogo=company_logo, location=location, description=description, salaryMin=salary_min, salaryMax=salary_max, salaryCurrency=salary_currency, jobType=job_type, isRemote=('remote' in (location or '').lower() or ('remote' in (description or '').lower())), applyUrl=apply_url, category=category, postedAt=posted_at, tags=tags)
+                session.add(job)
+                inserted += 1
+        session.commit()
+    print(f'Adzuna upsert complete — inserted {inserted} jobs')
+    return inserted
 
 app = FastAPI(title="Job Flow API — Dev")
 
@@ -356,9 +431,20 @@ def resend_verification(email: str):
 
 # --- Jobs ---
 @app.get('/jobs')
-def search_jobs(keyword: Optional[str] = None, location: Optional[str] = None, jobType: Optional[str] = None, category: Optional[str] = None, isRemote: Optional[bool] = None, salaryMin: Optional[int] = None, salaryMax: Optional[int] = None, sortBy: Optional[str] = 'relevance'):
+def search_jobs(
+    keyword: Optional[str] = None,
+    location: Optional[str] = None,
+    jobType: Optional[str] = None,
+    category: Optional[str] = None,
+    isRemote: Optional[bool] = None,
+    salaryMin: Optional[int] = None,
+    salaryMax: Optional[int] = None,
+    sortBy: Optional[str] = 'relevance',
+    limit: int = 20,
+    offset: int = 0,
+):
     with get_session() as session:
-        q = select(Job)
+        q = select(Job).order_by(Job.postedAt.desc())
         results = session.exec(q).all()
         # in-memory filtering for simplicity
         def match(job: Job):
@@ -382,7 +468,23 @@ def search_jobs(keyword: Optional[str] = None, location: Optional[str] = None, j
             return True
         filtered = [j for j in results if match(j)]
         # TODO: implement sorting
-        return filtered
+        total = len(filtered)
+        items = filtered[offset:offset + limit]
+        return {
+            'items': items,
+            'total': total,
+            'limit': limit,
+            'offset': offset,
+            'hasMore': offset + len(items) < total,
+        }
+
+
+@app.post('/jobs/refresh')
+def refresh_jobs():
+    inserted = upsert_adzuna_jobs_into_db()
+    with get_session() as session:
+        total = session.exec(select(func.count()).select_from(Job)).one()
+    return {'inserted': inserted, 'total': total}
 
 @app.get('/jobs/{job_id}')
 def get_job(job_id: str):
@@ -478,6 +580,11 @@ def build_cv(payload: CVIn, user: User = Depends(get_current_user)):
 @app.on_event('startup')
 def on_startup():
     init_db()
+    # Attempt to fetch jobs from Adzuna and save into DB (if configured)
+    try:
+        upsert_adzuna_jobs_into_db()
+    except Exception as e:
+        print('Error upserting Adzuna jobs on startup:', e)
     # seed if empty
     with get_session() as session:
         count = session.exec(select(Job)).all()

@@ -21,7 +21,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-def fetch_adzuna_results(page: int = 1, results_per_page: int = 50):
+def fetch_adzuna_results(page: int = 1, results_per_page: int = 50, category: Optional[str] = None, what: Optional[str] = None):
     app_id = os.environ.get('ADZUNA_APP_ID')
     app_key = os.environ.get('ADZUNA_APP_KEY')
     country = os.environ.get('ADZUNA_COUNTRY', 'us')
@@ -33,6 +33,11 @@ def fetch_adzuna_results(page: int = 1, results_per_page: int = 50):
         'app_key': app_key,
         'results_per_page': results_per_page,
     }
+    # allow filtering by Adzuna category slug and keyword (`what`)
+    if category:
+        params['category'] = category
+    if what:
+        params['what'] = what
     try:
         r = httpx.get(url, params=params, timeout=15.0)
         r.raise_for_status()
@@ -43,8 +48,29 @@ def fetch_adzuna_results(page: int = 1, results_per_page: int = 50):
         return []
 
 
-def upsert_adzuna_jobs_into_db():
-    results = fetch_adzuna_results(page=1, results_per_page=50)
+def map_adzuna_category_to_sector(tag: Optional[str], label: Optional[str]) -> Optional[str]:
+    if not tag and not label:
+        return None
+    t = (tag or '').lower()
+    l = (label or '').lower()
+    # simple heuristics — expand as needed
+    tech_keywords = ['it', 'it-jobs', 'software', 'technology', 'engineering', 'dev', 'data', 'programming']
+    healthcare_keywords = ['health', 'nursing', 'healthcare', 'medical']
+    maintenance_keywords = ['maintenance', 'repair', 'maintenance jobs']
+    sales_keywords = ['sales', 'retail']
+    if any(k in t or k in l for k in tech_keywords):
+        return 'tech'
+    if any(k in t or k in l for k in healthcare_keywords):
+        return 'healthcare'
+    if any(k in t or k in l for k in maintenance_keywords):
+        return 'maintenance'
+    if any(k in t or k in l for k in sales_keywords):
+        return 'sales'
+    return None
+
+
+def upsert_adzuna_jobs_into_db(category: Optional[str] = None, what: Optional[str] = None):
+    results = fetch_adzuna_results(page=1, results_per_page=50, category=category, what=what)
     if not results:
         return 0
     inserted = 0
@@ -65,7 +91,10 @@ def upsert_adzuna_jobs_into_db():
             salary_currency = r.get('salary_currency')
             job_type = r.get('contract_time') or r.get('job_type')
             apply_url = r.get('redirect_url') or r.get('url')
-            category = (r.get('category') or {}).get('label') if isinstance(r.get('category'), dict) else (r.get('category') or '')
+            adzuna_cat_tag = (r.get('category') or {}).get('tag') if isinstance(r.get('category'), dict) else None
+            adzuna_cat_label = (r.get('category') or {}).get('label') if isinstance(r.get('category'), dict) else (r.get('category') or '')
+            category = adzuna_cat_label or ''
+            sector = map_adzuna_category_to_sector(adzuna_cat_tag, adzuna_cat_label)
             posted_at = r.get('created') or r.get('created_at')
             tags = ','.join([category]) if category else None
 
@@ -83,11 +112,13 @@ def upsert_adzuna_jobs_into_db():
                 existing.jobType = job_type or existing.jobType
                 existing.applyUrl = apply_url or existing.applyUrl
                 existing.category = category or existing.category
+                existing.adzuna_category = adzuna_cat_tag or existing.adzuna_category
+                existing.sector = sector or existing.sector
                 existing.postedAt = posted_at or existing.postedAt
                 existing.tags = tags or existing.tags
                 session.add(existing)
             else:
-                job = Job(id=job_id, source='adzuna', title=title or 'Untitled', company=company or '', companyLogo=company_logo, location=location, description=description, salaryMin=salary_min, salaryMax=salary_max, salaryCurrency=salary_currency, jobType=job_type, isRemote=('remote' in (location or '').lower() or ('remote' in (description or '').lower())), applyUrl=apply_url, category=category, postedAt=posted_at, tags=tags)
+                job = Job(id=job_id, source='adzuna', title=title or 'Untitled', company=company or '', companyLogo=company_logo, location=location, description=description, salaryMin=salary_min, salaryMax=salary_max, salaryCurrency=salary_currency, jobType=job_type, isRemote=('remote' in (location or '').lower() or ('remote' in (description or '').lower())), applyUrl=apply_url, category=category, adzuna_category=adzuna_cat_tag, sector=sector, postedAt=posted_at, tags=tags)
                 session.add(job)
                 inserted += 1
         session.commit()
@@ -238,6 +269,9 @@ class RegisterIn(BaseModel):
     email: str
     fullName: Optional[str]
     password: str
+class ProfileUpdateIn(BaseModel):
+    fullName: Optional[str] = None
+    skills: Optional[List[str]] = None
 
 
 class ForgotPasswordIn(BaseModel):
@@ -260,7 +294,7 @@ def register(payload: RegisterIn):
                 raise HTTPException(status_code=400, detail='An account with this email exists via social login. Please sign in with the provider or link accounts.')
             raise HTTPException(status_code=400, detail='User exists')
         hashed = get_password_hash(payload.password)
-        user = User(id=payload.id, email=payload.email, fullName=payload.fullName, hashed_password=hashed, provider='local', is_email_verified=False)
+        user = User(id=payload.id, email=payload.email, fullName=payload.fullName, hashed_password=hashed, provider='local', is_email_verified=False, skills='')
         session.add(user)
         session.commit()
         verify_token = create_access_token({"sub": user.email, "purpose": "verify_email"}, expires_delta=timedelta(minutes=60))
@@ -315,7 +349,23 @@ def reset_password(payload: ResetPasswordIn):
 
 @app.get('/auth/me')
 def me(user: User = Depends(get_current_user)):
-    return {"id": user.id, "email": user.email, "fullName": user.fullName, "provider": getattr(user, 'provider', 'local'), "is_email_verified": getattr(user, 'is_email_verified', False)}
+    skills = [skill.strip() for skill in (getattr(user, 'skills', '') or '').split(',') if skill.strip()]
+    return {"id": user.id, "email": user.email, "fullName": user.fullName, "provider": getattr(user, 'provider', 'local'), "is_email_verified": getattr(user, 'is_email_verified', False), "skills": skills}
+
+@app.patch('/auth/me')
+def update_me(payload: ProfileUpdateIn, user: User = Depends(get_current_user)):
+    with get_session() as session:
+        db_user = session.get(User, user.id)
+        if not db_user:
+            raise HTTPException(status_code=404, detail='User not found')
+        if payload.fullName is not None:
+            db_user.fullName = payload.fullName
+        if payload.skills is not None:
+            db_user.skills = ','.join([skill.strip() for skill in payload.skills if skill.strip()])
+        session.add(db_user)
+        session.commit()
+        skills = [skill.strip() for skill in (db_user.skills or '').split(',') if skill.strip()]
+        return {"id": db_user.id, "email": db_user.email, "fullName": db_user.fullName, "provider": getattr(db_user, 'provider', 'local'), "is_email_verified": getattr(db_user, 'is_email_verified', False), "skills": skills}
 
 
 # --- Google OAuth skeleton (requires GOOGLE_CLIENT_ID & GOOGLE_CLIENT_SECRET env vars) ---
@@ -436,6 +486,8 @@ def search_jobs(
     location: Optional[str] = None,
     jobType: Optional[str] = None,
     category: Optional[str] = None,
+    adzuna_category: Optional[str] = None,
+    sector: Optional[str] = None,
     isRemote: Optional[bool] = None,
     salaryMin: Optional[int] = None,
     salaryMax: Optional[int] = None,
@@ -458,6 +510,10 @@ def search_jobs(
             if jobType and job.jobType != jobType:
                 return False
             if category and job.category != category:
+                return False
+            if adzuna_category and (getattr(job, 'adzuna_category', None) != adzuna_category):
+                return False
+            if sector and (getattr(job, 'sector', None) != sector):
                 return False
             if isRemote is not None and job.isRemote != isRemote:
                 return False

@@ -54,3 +54,24 @@ export function truncate(str: string, length: number): string {
   if (str.length <= length) return str;
   return str.slice(0, length) + '...';
 }
+
+export function splitSkills(value?: string[] | string | null): string[] {
+  if (!value) return [];
+  if (Array.isArray(value)) {
+    return value.map((skill) => skill.trim()).filter(Boolean);
+  }
+  return value.split(',').map((skill) => skill.trim()).filter(Boolean);
+}
+
+export function scoreJobBySkills(job: { title: string; company: string; description: string; tags: string[] }, skills: string[]): number {
+  if (!skills.length) return 0;
+  const haystack = [job.title, job.company, job.description, ...(job.tags || [])].join(' ').toLowerCase();
+  return skills.reduce((score, skill) => {
+    const normalized = skill.toLowerCase();
+    if (!normalized) return score;
+    if (haystack.includes(normalized)) return score + 3;
+    const tagMatch = (job.tags || []).some((tag) => tag.toLowerCase().includes(normalized));
+    if (tagMatch) return score + 4;
+    return score;
+  }, 0);
+}

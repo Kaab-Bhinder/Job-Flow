@@ -35,6 +35,7 @@ export interface User {
   email: string;
   fullName: string;
   avatarUrl: string;
+  skills?: string[];
 }
 
 export const mockUser: User = {
@@ -42,6 +43,7 @@ export const mockUser: User = {
   email: 'kaab@jobflow.com',
   fullName: 'Kaab Bhinder',
   avatarUrl: '',
+  skills: [],
 };
 
 export const mockJobs: Job[] = [

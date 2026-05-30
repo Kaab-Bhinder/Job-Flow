@@ -4,12 +4,20 @@ import JobCard from '../components/common/JobCard';
 import SearchBar from '../components/common/SearchBar';
 import FilterPanel from '../components/common/FilterPanel';
 import { Briefcase, SlidersHorizontal, LayoutGrid, List } from 'lucide-react';
+import { useAuthStore } from '../store/authStore';
+import { scoreJobBySkills } from '../lib/utils';
 
 export default function SearchPage() {
   const { getFilteredJobs, filters, hasMore, loadMore, refreshJobs, isLoadingMore, isRefreshing, totalJobs, jobs: loadedJobs } = useJobStore();
+  const userSkills = useAuthStore((s) => s.user?.skills || []);
   const [showFilters, setShowFilters] = useState(false);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
-  const jobs = getFilteredJobs();
+  const jobs = [...getFilteredJobs()].sort((a, b) => {
+    if (!userSkills.length) return new Date(b.postedAt).getTime() - new Date(a.postedAt).getTime();
+    const scoreDiff = scoreJobBySkills(b, userSkills) - scoreJobBySkills(a, userSkills);
+    if (scoreDiff !== 0) return scoreDiff;
+    return new Date(b.postedAt).getTime() - new Date(a.postedAt).getTime();
+  });
 
   const activeFilterCount = [
     filters.keyword,
@@ -38,6 +46,26 @@ export default function SearchPage() {
       <div style={{ marginBottom: '1.5rem' }}>
         <SearchBar compact />
       </div>
+
+      {userSkills.length > 0 && (
+        <div style={{
+          marginBottom: '1rem',
+          padding: '0.875rem 1rem',
+          borderRadius: 'var(--radius-lg)',
+          border: '1px solid var(--color-border-accent)',
+          background: 'var(--color-accent-soft)',
+          color: 'var(--color-accent)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.75rem',
+          flexWrap: 'wrap',
+        }}>
+          <strong>Personalized for your skills:</strong>
+          {userSkills.slice(0, 6).map((skill) => (
+            <span key={skill} className="tag" style={{ background: 'white', color: 'var(--color-accent)' }}>{skill}</span>
+          ))}
+        </div>
+      )}
 
       {/* Toolbar */}
       <div style={{

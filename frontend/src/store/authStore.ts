@@ -10,6 +10,7 @@ interface AuthStore {
   register: (name: string, email: string, password: string) => Promise<{ needsVerification?: boolean; verifyUrl?: string }>;
   forgotPassword: (email: string) => Promise<{ sent?: boolean; message?: string; resetUrl?: string; reason?: string }>;
   resetPassword: (token: string, newPassword: string) => Promise<{ success?: boolean }>;
+  saveSkills: (skills: string[]) => Promise<User>;
   logout: () => void;
 }
 
@@ -39,7 +40,7 @@ export const useAuthStore = create<AuthStore>((set) => ({
         const loadJobs = (await import('./jobStore')).useJobStore.getState().loadJobs;
         loadJobs?.();
       } catch (e) {
-        set({ user: { id: username, email: '', fullName: '', avatarUrl: '' }, isAuthenticated: true, isLoading: false });
+        set({ user: { id: username, email: '', fullName: '', avatarUrl: '', skills: [] }, isAuthenticated: true, isLoading: false });
       }
     } catch (e) {
       console.error('Login error', e);
@@ -80,6 +81,11 @@ export const useAuthStore = create<AuthStore>((set) => ({
       set({ isLoading: false });
       throw e;
     }
+  },
+  saveSkills: async (skills: string[]) => {
+    const updated = await api.patch('/auth/me', { skills });
+    set((state) => ({ user: state.user ? { ...state.user, ...updated } : updated }));
+    return updated;
   },
   logout: () => {
     api.clearToken();

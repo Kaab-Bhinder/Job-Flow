@@ -12,6 +12,10 @@ def init_db():
             'provider': "ALTER TABLE user ADD COLUMN provider TEXT DEFAULT 'local'",
             'provider_id': "ALTER TABLE user ADD COLUMN provider_id TEXT",
             'is_email_verified': "ALTER TABLE user ADD COLUMN is_email_verified BOOLEAN DEFAULT 0",
+            'skills': "ALTER TABLE user ADD COLUMN skills TEXT",
+            # job table migrations
+            'adzuna_category': "ALTER TABLE job ADD COLUMN adzuna_category TEXT",
+            'sector': "ALTER TABLE job ADD COLUMN sector TEXT",
         }
         for column, ddl in migrations.items():
             if column not in columns:

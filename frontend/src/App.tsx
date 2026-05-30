@@ -14,17 +14,22 @@ import ResetPasswordPage from './pages/ResetPasswordPage';
 import VerifyEmailPage from './pages/VerifyEmailPage';
 import NotFoundPage from './pages/NotFoundPage';
 import { useAuthStore } from './store/authStore';
-import { useEffect } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useJobStore } from './store/jobStore';
 import { api } from './lib/api';
+import SkillsOnboardingModal from './components/common/SkillsOnboardingModal';
 
-function ProtectedRoute({ children }: { children: JSX.Element }) {
+function ProtectedRoute({ children }: { children: ReactNode }) {
   const { isAuthenticated } = useAuthStore();
   return isAuthenticated ? children : <Navigate to="/login" replace />;
 }
 
 export default function App() {
   const loadJobs = useJobStore((s) => s.loadJobs);
+  const user = useAuthStore((s) => s.user);
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const saveSkills = useAuthStore((s) => s.saveSkills);
+  const [showSkillsOnboarding, setShowSkillsOnboarding] = useState(false);
   useEffect(() => {
     // load jobs initially
     loadJobs?.({ limit: 20, offset: 0 });
@@ -64,6 +69,29 @@ export default function App() {
       // ignore parsing errors
     }
   }, [loadJobs]);
+
+  useEffect(() => {
+    if (!isAuthenticated || !user) {
+      setShowSkillsOnboarding(false);
+      return;
+    }
+
+    const hasSkills = Array.isArray(user.skills) && user.skills.length > 0;
+    const dismissed = localStorage.getItem('jobflow_skills_onboarded') === '1';
+    setShowSkillsOnboarding(!hasSkills && !dismissed);
+  }, [isAuthenticated, user]);
+
+  const handleSaveSkills = async (skills: string[]) => {
+    await saveSkills(skills);
+    localStorage.setItem('jobflow_skills_onboarded', '1');
+    setShowSkillsOnboarding(false);
+  };
+
+  const handleSkipSkills = () => {
+    localStorage.setItem('jobflow_skills_onboarded', '1');
+    setShowSkillsOnboarding(false);
+  };
+
   return (
     <Router>
       <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
@@ -100,6 +128,14 @@ export default function App() {
           </Routes>
         </main>
       </div>
+
+      <SkillsOnboardingModal
+        open={showSkillsOnboarding}
+        userName={user?.fullName}
+        initialSkills={user?.skills || []}
+        onSave={handleSaveSkills}
+        onSkip={handleSkipSkills}
+      />
 
       <Toaster position="top-right" toastOptions={{ duration: 3000 }} />
     </Router>
